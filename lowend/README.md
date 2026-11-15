@@ -28,12 +28,18 @@ Chromium 的驱动黑名单把 2015 年停更的驱动一刀切掉，导致合�
 # 首次：安装运行时（需要 Node >= 24.9.0）
 npm install @deepseek-ai/dsh
 
+# 先看它探测到了什么（不做任何启动）
+.\lowend\dsh-gpu.cmd -Check
+
 # 启动（会自动拉起后端，再打开加速窗口）
 .\lowend\dsh-gpu.cmd
 
 # 停止后端
 .\lowend\dsh-gpu.cmd -Stop
 ```
+
+脚本会自动探测 Node（≥24.9）、`@deepseek-ai/dsh` 与浏览器；端口被占用时顺延。
+探测结果不对时用 `-DshDir`，或环境变量 `DSH_NODE` / `DSH_BIN` / `DSH_DIR` 覆盖。
 
 窗口以 `--app=` 模式打开，无地址栏，观感接近桌面应用。
 
