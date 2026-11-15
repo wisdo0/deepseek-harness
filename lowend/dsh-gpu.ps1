@@ -7,10 +7,14 @@
 
     用法：
         dsh-gpu                  启动（必要时拉起后端，然后打开加速窗口）
+        dsh-gpu -Check           只打印探测到的环境，不做任何启动
         dsh-gpu -Stop            停止后端
         dsh-gpu -Port 3081       指定端口
         dsh-gpu -Browser chrome  强制用 Chrome
         dsh-gpu -NoApp           普通标签页而非 --app 窗口
+        dsh-gpu -DshDir D:\dsh   指定 dsh 安装目录
+
+    环境变量覆盖：DSH_NODE、DSH_BIN、DSH_DIR
 #>
 [CmdletBinding()]
 param(
@@ -19,24 +23,125 @@ param(
     [string]$Browser = 'auto',
     [switch]$Stop,
     [switch]$NoApp,
+    [switch]$Check,
+    [string]$DshDir,
     [string]$ProfileDir = "$env:LOCALAPPDATA\dsh-gpu-profile"
 )
 
 $ErrorActionPreference = 'Stop'
-$nodeExe = 'C:\Users\wisdo\bin\node-v24.22.3-win-x64\node.exe'
-$dshDir  = 'C:\Users\wisdo\dsh'
-$dshBin  = Join-Path $dshDir 'node_modules\@deepseek-ai\dsh\lib\bin.js'
-$logFile = Join-Path $dshDir 'server.log'
-$pidFile = Join-Path $dshDir 'server.pid'
+$MinNodeMajor = 24
+$MinNodeMinor = 9
+
+# ---------- 环境探测 ----------
+function Get-NodeVersion([string]$exe) {
+    try {
+        $v = & $exe --version 2>$null
+        if ($v -match '^v(\d+)\.(\d+)\.(\d+)') {
+            return [pscustomobject]@{ Major = [int]$Matches[1]; Minor = [int]$Matches[2]; Patch = [int]$Matches[3]; Raw = $v.Trim() }
+        }
+    } catch {}
+    return $null
+}
+
+function Resolve-NodeExe {
+    if ($env:DSH_NODE -and (Test-Path $env:DSH_NODE)) { return (Resolve-Path $env:DSH_NODE).Path }
+
+    $cands = New-Object System.Collections.Generic.List[string]
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($cmd) { $cands.Add($cmd.Source) }
+    foreach ($p in @(
+        "$env:ProgramFiles\nodejs\node.exe",
+        "${env:ProgramFiles(x86)}\nodejs\node.exe",
+        "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+    )) { if ($p -and (Test-Path $p)) { $cands.Add($p) } }
+
+    # 便携安装常见位置
+    foreach ($root in @("$env:USERPROFILE\bin", "$env:USERPROFILE\scoop\apps\nodejs\current", "$env:LOCALAPPDATA\nvs")) {
+        if (Test-Path $root) {
+            Get-ChildItem -Path $root -Filter node.exe -Recurse -Depth 2 -ErrorAction SilentlyContinue |
+                Select-Object -First 8 | ForEach-Object { $cands.Add($_.FullName) }
+        }
+    }
+
+    $seen = @{}
+    foreach ($c in $cands) {
+        if (-not $c) { continue }
+        $full = try { (Resolve-Path $c).Path } catch { $c }
+        if ($seen[$full]) { continue }
+        $seen[$full] = $true
+        $v = Get-NodeVersion $full
+        if ($v -and ($v.Major -gt $MinNodeMajor -or ($v.Major -eq $MinNodeMajor -and $v.Minor -ge $MinNodeMinor))) { return $full }
+    }
+    return $null
+}
+
+function Resolve-DshBin([string]$nodeExe) {
+    if ($env:DSH_BIN -and (Test-Path $env:DSH_BIN)) { return (Resolve-Path $env:DSH_BIN).Path }
+
+    $roots = New-Object System.Collections.Generic.List[string]
+    if ($DshDir) { $roots.Add($DshDir) }
+    if ($env:DSH_DIR) { $roots.Add($env:DSH_DIR) }
+    $roots.Add($PSScriptRoot)
+    $roots.Add("$env:USERPROFILE\dsh")
+    $roots.Add("$env:USERPROFILE\.dsh")
+
+    if ($nodeExe) {
+        $npmCli = Join-Path (Split-Path $nodeExe -Parent) 'node_modules\npm\bin\npm-cli.js'
+        if (Test-Path $npmCli) {
+            try {
+                $npmRoot = & $nodeExe $npmCli root -g 2>$null
+                if ($LASTEXITCODE -eq 0 -and $npmRoot) { $roots.Add($npmRoot.Trim()) }
+            } catch {}
+        }
+    }
+
+    foreach ($r in $roots) {
+        $bin = Join-Path $r 'node_modules\@deepseek-ai\dsh\lib\bin.js'
+        if (Test-Path $bin) { return (Resolve-Path $bin).Path }
+        $binAlt = Join-Path $r '@deepseek-ai\dsh\lib\bin.js'
+        if (Test-Path $binAlt) { return (Resolve-Path $binAlt).Path }
+    }
+    return $null
+}
+
+function Find-Browser([string]$Name) {
+    $paths = if ($Name -eq 'edge') {
+        @("$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe", "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe")
+    } else {
+        @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe", "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe")
+    }
+    foreach ($p in $paths) { if ($p -and (Test-Path $p)) { return $p } }
+    return $null
+}
+
+$nodeExe = Resolve-NodeExe
+$dshBin  = Resolve-DshBin $nodeExe
+$logDir  = $null
+if ($DshDir)   { $logDir = $DshDir }
+elseif ($dshBin -match '^(.*?)[\\/]node_modules[\\/]') {
+    # <root>\node_modules\@deepseek-ai\dsh\lib\bin.js -> <root>（按锚点截断，别数层级）
+    $logDir = $Matches[1]
+}
+if (-not $logDir) { $logDir = $PSScriptRoot }
+$logFile = Join-Path $logDir 'server.log'
+$pidFile = Join-Path $logDir 'server.pid'
+
+if ($Check) {
+    Write-Host "node    : $(if($nodeExe){$nodeExe}else{'未找到 (需 >= 24.9)'})"
+    if ($nodeExe) { Write-Host "          版本 $((Get-NodeVersion $nodeExe).Raw)" }
+    Write-Host "dsh bin : $(if($dshBin){$dshBin}else{'未找到'})"
+    Write-Host "日志    : $logFile"
+    $b = Find-Browser 'edge'; if (-not $b) { $b = Find-Browser 'chrome' }
+    Write-Host "浏览器  : $(if($b){$b}else{'未找到'})"
+    return
+}
 
 function Stop-Server {
     if (Test-Path $pidFile) {
         $old = Get-Content $pidFile -ErrorAction SilentlyContinue
-        if ($old) {
-            if (Get-Process -Id $old -ErrorAction SilentlyContinue) {
-                Stop-Process -Id $old -Force
-                Write-Host "[dsh] 已停止后端 pid=$old"
-            }
+        if ($old -and (Get-Process -Id $old -ErrorAction SilentlyContinue)) {
+            Stop-Process -Id $old -Force
+            Write-Host "[dsh] 已停止后端 pid=$old"
         }
         Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
     }
@@ -50,79 +155,73 @@ function Stop-Server {
 
 if ($Stop) { Stop-Server; return }
 
-# 从后端日志里取带 token 的真实入口；裸地址会返回 401
-function Get-AppUrl {
+function Get-AppUrl([int]$p) {
     if (Test-Path $logFile) {
-        $m = Select-String -Path $logFile -Pattern 'http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+' -AllMatches |
-             Select-Object -Last 1
+        $pat = "http://127\.0\.0\.1:$p/\?token=[A-Za-z0-9_\-]+"
+        $m = Select-String -Path $logFile -Pattern $pat -AllMatches | Select-Object -Last 1
         if ($m) { return $m.Matches[0].Value }
     }
     return $null
 }
 
-function Test-Up {
+function Test-Port([int]$p) {
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        Invoke-WebRequest -Uri "http://127.0.0.1:$p/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
         return $true
     } catch {
-        if ($_.Exception.Response) { return $true }   # 401 也算活着
+        if ($_.Exception.Response) { return $true }
         return $false
     }
 }
 
-# 复用前先确认这个端口上跑的是我们这次的目标，且日志里有 token
-$needStart = -not (Test-Up)
-if (-not $needStart -and -not (Get-AppUrl)) {
-    Write-Host "[dsh] 端口 $Port 已有服务但没有可用 token，重启后端"
-    Stop-Server
-    Start-Sleep -Seconds 1
-    $needStart = $true
+if (-not $nodeExe) { throw "找不到 Node >= $MinNodeMajor.$MinNodeMinor。装一个，或用 `$env:DSH_NODE 指向它。" }
+if (-not $dshBin)  { throw "找不到 @deepseek-ai/dsh。先在某目录 npm install @deepseek-ai/dsh，或用 -DshDir / `$env:DSH_DIR 指定位置。" }
+
+# 端口被非 dsh 进程占用则顺延
+$chosen = $Port
+for ($i = 0; $i -lt 10; $i++) {
+    if (-not (Test-Port $chosen)) { break }
+    if (Get-AppUrl $chosen) { break }
+    $chosen++
 }
 
-if ($needStart) {
-    if (-not (Test-Path $nodeExe)) { throw "找不到 Node 24：$nodeExe" }
-    if (-not (Test-Path $dshBin))  { throw "找不到 dsh：$dshBin（先在 $dshDir 执行 npm install @deepseek-ai/dsh）" }
-
-    Write-Host "[dsh] 启动后端 → 端口 $Port"
+if (Test-Port $chosen) {
+    if (-not (Get-AppUrl $chosen)) { throw "端口 $chosen 被其它进程占用，且日志里没有可用 token" }
+    Write-Host "[dsh] 复用已在运行的后端（端口 $chosen）"
+} else {
+    Write-Host "[dsh] 启动后端 → 端口 $chosen"
     Remove-Item $logFile -Force -ErrorAction SilentlyContinue
     $proc = Start-Process -FilePath $nodeExe `
-        -ArgumentList @($dshBin, 'web', '--no-open', '--port', "$Port") `
-        -WorkingDirectory $dshDir -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err" `
+        -ArgumentList @($dshBin, 'web', '--no-open', '--port', "$chosen") `
+        -WorkingDirectory $logDir -RedirectStandardOutput $logFile -RedirectStandardError "$logFile.err" `
         -PassThru -WindowStyle Hidden
     Set-Content -Path $pidFile -Value $proc.Id
     Write-Host "[dsh] pid=$($proc.Id)  日志：$logFile"
 
     $up = $false
-    for ($i = 0; $i -lt 120; $i++) {
-        if (Test-Up) { $up = $true; break }
+    for ($i = 0; $i -lt 160; $i++) {
+        if (Test-Port $chosen) { $up = $true; break }
         if ($proc.HasExited) { break }
         Start-Sleep -Milliseconds 500
     }
     if (-not $up) {
         Write-Host "[dsh] 后端没起来，日志尾部：" -ForegroundColor Red
-        if (Test-Path $logFile)     { Get-Content $logFile -Tail 30 }
+        if (Test-Path $logFile)       { Get-Content $logFile -Tail 30 }
         if (Test-Path "$logFile.err") { Get-Content "$logFile.err" -Tail 30 }
         throw "启动失败"
     }
     Write-Host "[dsh] 后端就绪"
-} else {
-    Write-Host "[dsh] 复用已在运行的后端"
 }
 
-$appUrl = Get-AppUrl
+$appUrl = Get-AppUrl $chosen
 if (-not $appUrl) { throw "没从 $logFile 解析到 token 入口，检查后端日志" }
 Write-Host "[dsh] 入口 $appUrl"
 
-# ---- 选择浏览器 ----
-$candidates = [ordered]@{
-    edge   = @("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "C:\Program Files\Microsoft\Edge\Application\msedge.exe")
-    chrome = @("C:\Program Files\Google\Chrome\Application\chrome.exe", "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe")
-}
 $chooser = if ($Browser -eq 'auto') { @('edge', 'chrome') } else { @($Browser) }
 $exe = $null; $browserName = $null
 foreach ($name in $chooser) {
-    foreach ($c in $candidates[$name]) { if (Test-Path $c) { $exe = $c; $browserName = $name; break } }
-    if ($exe) { break }
+    $p = Find-Browser $name
+    if ($p) { $exe = $p; $browserName = $name; break }
 }
 if (-not $exe) { throw "没找到 Edge 或 Chrome" }
 
