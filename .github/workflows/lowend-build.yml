@@ -1,0 +1,60 @@
+name: lowend-build
+
+on:
+  push:
+    branches: [lowend-win]
+  pull_request:
+    branches: [master, lowend-win]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: 校验并打包启动器
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 PowerShell 脚本可解析
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path lowend -Recurse -Filter *.ps1
+          if (-not $files) { throw '没有找到任何 .ps1' }
+          foreach ($f in $files) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Host "::error file=$($f.FullName)::$($_.Message)" }
+              throw "解析失败: $($f.Name)"
+            }
+            Write-Host "OK $($f.Name)"
+          }
+
+      - name: 校验 Node 探针语法
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path lowend -Recurse -Filter *.mjs | ForEach-Object {
+            node --check $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "语法错误: $($_.Name)" }
+            Write-Host "OK $($_.Name)"
+          }
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $out = 'dist/dsh-lowend-win-x64.zip'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path lowend\* -DestinationPath $out -Force
+          Get-Item $out | Select-Object FullName, Length | Format-List
+          $hash = (Get-FileHash $out -Algorithm SHA256).Hash
+          "SHA256=$hash" | Tee-Object -FilePath dist\SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dsh-lowend-win-x64
+          path: |
+            dist/dsh-lowend-win-x64.zip
+            dist/SHA256.txt
+          if-no-files-found: error
