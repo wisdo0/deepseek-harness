@@ -157,6 +157,32 @@ dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
 > 切换标志组合后，务必用**独立的 `user-data-dir`** 重开，否则 Chromium 可能沿用
 > 已在运行的进程而不读取新标志。
 
+## 跟随上游
+
+`upstream-sync.yml` 每周一 09:23（北京）自动检查上游，也可手动触发。
+
+**这个文件在 master 分支，不在 lowend-win**。原因：GitHub 的 `schedule` 与
+`workflow_dispatch` **只读默认分支**上的 workflow 文件；而 `lowend-build.yml`
+走 `push` 事件，读的是被推送的分支，所以它留在 lowend-win。改同步逻辑请改 master。
+
+同步用 **merge 不用 rebase**（不改写历史，出问题好回溯）。因为 `lowend/` 是独立
+目录、不碰上游代码，合并基本不会冲突；workflow 会先打印上游是否碰到了我们的文件。
+
+流程：合并 → 校验脚本 BOM/语法 → 跑反代测试 → 推送。任何一步失败都会开一个
+标题为「上游同步需要人工处理」的 issue（已有未关闭的则不重复开）。
+推送后 `lowend-build` 会接着跑完整集成测试。
+
+```bash
+gh workflow run upstream-sync.yml -f dry_run=true   # 只看差距，不动分支
+gh workflow run upstream-sync.yml                   # 真同步
+```
+
+已实测合并路径（构造 master 领先 lowend-win 的场景）：合并、校验、反代测试、推送
+全部通过，测试分支不影响 lowend-win。上游若改动了 `.github/workflows/*`，
+`GITHUB_TOKEN` 会因缺 workflows 权限推送失败，这时走 issue 人工处理。
+
+> GitHub 会在仓库 60 天无活动后自动停用 scheduled workflow，需要到 Actions 页手动重新启用。
+
 ## 编码注意
 
 `dsh-gpu.ps1` **必须保存为 UTF-8 with BOM**。Windows PowerShell 5.1 对无 BOM 的
@@ -209,5 +235,5 @@ node server.mjs          # 终端 A
 - [x] 反代行为回归测试进 CI（含 Origin 改写对照组）
 - [x] 省内存标志 A/B 实测（−30% 工作集，帧率不变）
 - [x] `-Stop` 全停（含浏览器，按 profile 精确匹配不误伤）与 `-Clean` 缓存清理
+- [x] 上游自动同步（merge + 验证 + 失败开 issue，合并路径已实测）
 - [ ] Electron 桌面端在 `app.commandLine` 层固化标志，免去浏览器依赖
-- [ ] 跟随上游同步的 rebase 例行流程
