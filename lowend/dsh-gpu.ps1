@@ -8,7 +8,8 @@
     用法：
         dsh-gpu                  启动（必要时拉起后端，然后打开加速窗口）
         dsh-gpu -Check           只打印探测到的环境，不做任何启动
-        dsh-gpu -Stop            停止后端
+        dsh-gpu -Stop            停止后端 + 反代 + 本工具启动的浏览器窗口
+        dsh-gpu -Clean           全停后清磁盘缓存（保留登录态与历史）
         dsh-gpu -Port 3081       指定端口
         dsh-gpu -Browser chrome  强制用 Chrome
         dsh-gpu -NoApp           普通标签页而非 --app 窗口
@@ -26,6 +27,7 @@ param(
     [switch]$NoApp,
     [switch]$Check,
     [switch]$Lite,
+    [switch]$Clean,
     [string]$DshDir,
     [string]$ProfileDir = "$env:LOCALAPPDATA\dsh-gpu-profile"
 )
@@ -186,7 +188,53 @@ function Stop-Server {
         }
 }
 
-if ($Stop) { Stop-Server; return }
+function Stop-Browser {
+    # 只关用我们这个 profile 起来的实例，绝不碰用户自己的浏览器。
+    # Edge 可能把路径规范化成不同斜杠形式，比较前统一。
+    $want = ([IO.Path]::GetFullPath($ProfileDir)).Replace('/', '\').TrimEnd('\')
+    $n = 0
+    Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.CommandLine -match '--user-data-dir=("([^"]+)"|(\S+))') {
+            $raw = $Matches[2]
+            if (-not $raw) { $raw = $Matches[3] }
+            if ($raw) {
+                $got = $raw.Replace('/', '\').TrimEnd('\')
+                if ($got -ieq $want) {
+                    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                    $n++
+                }
+            }
+        }
+    }
+    if ($n -gt 0) { Write-Host "[dsh] 已关闭本工具启动的浏览器（$n 个进程）" }
+}
+
+if ($Stop) { Stop-Server; Stop-Browser; return }
+
+if ($Clean) {
+    # 只删可再生缓存，保留 Cookies / Login Data / Preferences，不丢登录态。
+    # 实测这个 profile 目录能涨到 300MB，主要是磁盘缓存。
+    Stop-Server
+    Stop-Browser
+    Start-Sleep -Milliseconds 1500
+    $cacheDirs = @(
+        'Cache', 'Code Cache', 'GPUCache', 'ShaderCache', 'DawnCache', 'GrShaderCache',
+        'Default\Cache', 'Default\Code Cache', 'Default\GPUCache',
+        'Default\Service Worker\CacheStorage'
+    )
+    $freed = 0
+    foreach ($d in $cacheDirs) {
+        $p = Join-Path $ProfileDir $d
+        if (Test-Path $p) {
+            $size = (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+            Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue
+            $freed += $size
+            Write-Host "[dsh] 清理 $d"
+        }
+    }
+    Write-Host ("[dsh] 释放 {0:N0} MB，登录态保留" -f ($freed / 1MB))
+    return
+}
 
 function Get-AppUrl([int]$p, [int]$TimeoutSec = 25) {
     # 必须轮询：TCP 端口 listen 与「日志里写出 token」不是同一时刻，
@@ -315,7 +363,16 @@ $flags = @(
     "--enable-features=CanvasOopRasterization",
     "--no-first-run",
     "--no-default-browser-check",
-    "--disable-backgrounding-occluded-windows"
+    "--disable-backgrounding-occluded-windows",
+
+    # ---- 省内存：这台机器可用内存常年 <1.5GB，比显卡更容易成为瓶颈 ----
+    "--disable-component-extensions-with-background-pages",  # Edge 自带的后台扩展页白吃内存
+    "--disable-background-networking",         # 关掉更新检查等后台联网
+    "--disable-default-apps",
+    "--disable-sync",
+    "--no-pings",
+    "--disk-cache-size=67108864",              # 磁盘缓存限 64MB，否则 profile 能涨到 300MB+
+    "--disable-features=msEdgeSyncPromo,EdgeSyncConfirmationDialog,Translate"
 )
 
 # 更激进的减负：前端若尊重 prefers-reduced-motion，可关掉大部分过渡与动画
