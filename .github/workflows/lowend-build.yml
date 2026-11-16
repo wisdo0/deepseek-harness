@@ -83,6 +83,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "启动器自检失败 (exit $LASTEXITCODE)" }
           Write-Host '启动器探测正常'
 
+      - name: 反代行为测试
+        shell: pwsh
+        run: |
+          # 验三件事：HTML 注入、流式响应不被改动、WebSocket upgrade 能透传
+          node lowend/tests/proxy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "反代测试失败" }
+
       - name: 打包
         shell: pwsh
         run: |
