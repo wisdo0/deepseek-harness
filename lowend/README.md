@@ -174,7 +174,19 @@ dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
 gh workflow run desktop-build.yml        # 手动触发构建
 ```
 
-产物为 Windows x64 未签名安装包（无签名证书，首次运行 SmartScreen 会提示）。
+构建约 14 分钟，产物在仓库根的 `.desktop-build/targets/win-x64/unsigned-artifacts/`
+（注意是**点开头**的目录，不在 `apps/desktop/` 下），CI 会把
+`deepseek-harness-<版本>-win-x64-unsigned.exe` 作为 artifact 上传。
+产物自包含 Node / pnpm / Python 运行时，目标机器不需要装开发环境。
+
+**配置限制（重要）**：打包需要 `apps/desktop/.env.windows`，且 mandatory-update
+origin 在 unsigned 构建下也必填。workflow 里现在填的是**占位值**——能过构建校验，
+但包内置的更新与登录地址不是真实服务。上游的真实配置放在 GitHub Environments
+（`desktop-test` / `desktop-production`）的 secrets 里，不在仓库中。
+
+所以要出**真正可用**的安装包，需要把 workflow「生成 .env.windows」那一步里的
+`DOWNLOAD_TEST_ORIGIN`、`DSH_DESKTOP_MANDATORY_UPDATE_*_ORIGIN`、
+`allowedAuthOrigins` 换成你自己的服务端地址。只验证构建链路则不用改。
 
 > 桌面端与浏览器启动器用的是**同一组标志**，性能上没有差别。
 > 它的价值在于免装 Node / dsh、单 exe 分发，适合自己机器以外的场景。
