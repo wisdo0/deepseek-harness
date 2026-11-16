@@ -58,6 +58,18 @@ function Repair-ProcessEnv {
 }
 Repair-ProcessEnv | Out-Null
 
+# ---------- 便携模式 ----------
+# 便携包结构：<root>\lowend\dsh-gpu.ps1 + <root>\node\node.exe + <root>\app\node_modules\...
+# 命中就全部用包内相对路径，不依赖目标机器装过 Node / dsh，也不污染全局环境。
+$PortableRoot = Split-Path $PSScriptRoot -Parent
+$PortableNode = Join-Path $PortableRoot 'node\node.exe'
+$PortableDshRoot = Join-Path $PortableRoot 'app'
+$IsPortable = (Test-Path $PortableNode) -and (Test-Path (Join-Path $PortableDshRoot 'node_modules\@deepseek-ai\dsh\lib\bin.js'))
+if ($IsPortable -and -not $PSBoundParameters.ContainsKey('ProfileDir')) {
+    # 浏览器配置也放在包内，换机器/换目录不留下残留
+    $ProfileDir = Join-Path $PortableRoot 'profile'
+}
+
 # ---------- 环境探测 ----------
 function Get-NodeVersion([string]$exe) {
     try {
@@ -70,6 +82,7 @@ function Get-NodeVersion([string]$exe) {
 }
 
 function Resolve-NodeExe {
+    if ($IsPortable) { return $PortableNode }
     if ($env:DSH_NODE -and (Test-Path $env:DSH_NODE)) { return (Resolve-Path $env:DSH_NODE).Path }
 
     $cands = New-Object System.Collections.Generic.List[string]
@@ -105,6 +118,7 @@ function Resolve-DshBin([string]$nodeExe) {
     if ($env:DSH_BIN -and (Test-Path $env:DSH_BIN)) { return (Resolve-Path $env:DSH_BIN).Path }
 
     $roots = New-Object System.Collections.Generic.List[string]
+    if ($IsPortable) { $roots.Add($PortableDshRoot) }
     if ($DshDir) { $roots.Add($DshDir) }
     if ($env:DSH_DIR) { $roots.Add($env:DSH_DIR) }
     $roots.Add($PSScriptRoot)
