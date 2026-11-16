@@ -297,6 +297,7 @@ if (Test-Port $chosen) {
     Write-Host "[dsh] 复用已在运行的后端（端口 $chosen）"
 } else {
     Write-Host "[dsh] 启动后端 → 端口 $chosen"
+    Write-Host "[dsh] 首次启动较慢（这台机器约 1 分钟），请稍候，不要关闭本窗口..." -ForegroundColor Yellow
     Remove-Item $logFile -Force -ErrorAction SilentlyContinue
     $proc = Start-Process -FilePath $nodeExe `
         -ArgumentList @($dshBin, 'web', '--no-open', '--port', "$chosen") `
@@ -317,7 +318,7 @@ if (Test-Port $chosen) {
         if (Test-Path "$logFile.err") { Get-Content "$logFile.err" -Tail 30 }
         throw "启动失败"
     }
-    Write-Host "[dsh] 后端就绪"
+    Write-Host "[dsh] 后端就绪，正在打开浏览器窗口..." -ForegroundColor Green
 }
 
 $appUrl = Get-AppUrl $chosen
