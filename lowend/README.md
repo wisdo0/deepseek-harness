@@ -271,4 +271,4 @@ node server.mjs          # 终端 A
 - [x] 省内存标志 A/B 实测（−30% 工作集，帧率不变）
 - [x] `-Stop` 全停（含浏览器，按 profile 精确匹配不误伤）与 `-Clean` 缓存清理
 - [x] 上游自动同步（merge + 验证 + 失败开 issue，合并路径已实测）
-- [ ] Electron 桌面端在 `app.commandLine` 层固化标志，免去浏览器依赖
+- [x] Electron 桌面端固化标志（构建时注入 main.ts，已产出 309MB win-x64 安装包）
