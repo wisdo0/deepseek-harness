@@ -1,0 +1,158 @@
+name: 上游同步测试
+
+# lowend/ 是独立目录，不碰上游代码，因此合并上游几乎不会冲突。
+# 这里用 merge 而不是 rebase：不改写历史，出问题好回溯。
+#
+# 每周一 09:23（北京）检查一次，也可手动触发。
+# dry_run=true 只打印差距，不动任何分支。
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只检查差距，不合并不推送
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 1 * * 1'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: windows-latest
+    steps:
+      - name: 检出 lowend-win
+        uses: actions/checkout@v4
+        with:
+          ref: sync-test
+          fetch-depth: 0
+
+      - name: 拉取上游
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/wisdo0/deepseek-harness.git || true
+          git fetch upstream master
+
+      - name: 计算差距
+        id: gap
+        shell: bash
+        run: |
+          behind=$(git rev-list --count HEAD..upstream/master)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "上游领先 lowend-win：$behind 个提交"
+          if [ "$behind" != "0" ]; then
+            echo "--- 待合并的提交 ---"
+            git log --oneline HEAD..upstream/master | head -20
+            echo "--- 上游改动的文件里是否有我们的物料 ---"
+            git diff --name-only HEAD...upstream/master | grep -E '^(lowend/|\.github/workflows/lowend-build\.yml)' \
+              && echo "::warning::上游碰到了我们的文件，可能冲突" \
+              || echo "上游未触碰 lowend/，预期无冲突"
+          fi
+
+      - name: 已是最新
+        if: steps.gap.outputs.behind == '0'
+        run: Write-Host "无需同步"
+
+      - name: dry run 到此为止
+        if: inputs.dry_run == true
+        run: Write-Host "dry run：不合并、不推送"
+
+      - name: 合并上游
+        id: merge
+        if: steps.gap.outputs.behind != '0' && inputs.dry_run != true
+        shell: bash
+        run: |
+          if git merge upstream/master --no-edit; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::error::合并冲突，已中止。请人工 rebase。"
+            git merge --abort || true
+            exit 1
+          fi
+
+      - name: 校验 PowerShell 编码与语法
+        if: steps.gap.outputs.behind != '0' && inputs.dry_run != true
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem -Path lowend -Recurse -Filter *.ps1 | ForEach-Object {
+            $b = [IO.File]::ReadAllBytes($_.FullName)
+            if (-not ($b.Length -ge 3 -and $b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) { $bad += $_.Name }
+          }
+          if ($bad.Count -gt 0) { throw "缺 BOM：$($bad -join ',')" }
+          Get-ChildItem -Path lowend -Recurse -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "语法错误 $($_.Name)：$($errors[0].Message)" }
+          }
+          Write-Host "脚本校验通过"
+
+      - name: 反代行为测试
+        if: steps.gap.outputs.behind != '0' && inputs.dry_run != true
+        shell: pwsh
+        run: |
+          node lowend/tests/proxy.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw "反代测试失败，不推送" }
+
+      - name: 推送
+        id: push
+        if: steps.gap.outputs.behind != '0' && inputs.dry_run != true
+        shell: bash
+        run: |
+          # 注意：若上游提交改动了 .github/workflows/*，GITHUB_TOKEN 推送会被拒
+          # （refusing to allow ... without 'workflows' permission）。这种情况开 issue 人工处理。
+          if git push origin sync-test; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: 同步结果
+        if: steps.gap.outputs.behind != '0' && inputs.dry_run != true && steps.push.outputs.ok == 'true'
+        run: Write-Host "已同步上游并推送，lowend-build 会接着跑完整集成测试"
+
+      - name: 失败时开 issue（防重复）
+        if: failure() && steps.gap.outputs.behind != '0' && inputs.dry_run != true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '上游同步需要人工处理';
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 50
+            });
+            if (issues.some(i => i.title === title)) {
+              console.log('已有未关闭的同步 issue，不重复开');
+              return;
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body: [
+                '自动同步上游失败，需要人工介入。',
+                '',
+                '常见原因：',
+                '- 合并冲突（上游改到了 lowend/ 或 lowend-build.yml）',
+                '- 上游提交改动了 `.github/workflows/*`，GITHUB_TOKEN 无 workflows 权限推送',
+                '- 合并后反代测试或脚本校验未通过',
+                '',
+                `运行记录：${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                '处理方式：本地 `git fetch upstream && git merge upstream/master`，解决后推送。'
+              ].join('\n')
+            });
