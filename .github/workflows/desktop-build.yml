@@ -118,16 +118,15 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          # 产物在仓库根的 .desktop-build/（点开头），不在 apps/desktop 下。
-          # 不要对整个 apps/desktop 递归：node_modules 有几十万文件，能跑十几分钟。
-          $dirs = @('.desktop-build/targets')
-          foreach ($d in $dirs) {
-            if (Test-Path $d) {
-              Get-ChildItem -Path $d -Recurse -Depth 3 -Include *.exe,*.zip,*.7z -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notmatch 'win-unpacked|node_modules|__uninstaller' } |
-                Sort-Object Length -Descending | Select-Object -First 10 |
-                ForEach-Object { "{0,10:N1} MB  {1}" -f ($_.Length/1MB), $_.FullName }
-            }
+          # 产物在 apps/desktop/.desktop-build/（点开头，且相对 desktop 项目目录），
+          # 不是仓库根，也不是 apps/desktop/out。
+          Get-ChildItem apps/desktop -Directory -Force | ForEach-Object { "  dir: $($_.Name)" }
+          $d = 'apps/desktop/.desktop-build/targets'
+          if (Test-Path $d) {
+            Get-ChildItem -Path $d -Recurse -Depth 3 -Include *.exe,*.zip -Force -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch 'win-unpacked|node_modules|__uninstaller' } |
+              Sort-Object Length -Descending | Select-Object -First 10 |
+              ForEach-Object { "{0,10:N1} MB  {1}" -f ($_.Length/1MB), $_.FullName }
           }
 
       - name: 上传安装包
@@ -135,6 +134,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-desktop-lowend-win-x64
-          path: .desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+          path: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+          # .desktop-build 是隐藏目录，v4 默认会排除隐藏文件，必须显式打开
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
