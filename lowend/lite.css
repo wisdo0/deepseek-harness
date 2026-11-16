@@ -1,0 +1,35 @@
+/* dsh-lite：降低光栅化压力的覆盖样式
+ *
+ * 只动「合成开销大」的属性，不改布局、不改配色、不改字体。
+ * 目标是 512MB 显存 / 老 GPU 上少掉帧，而不是换一套视觉。
+ */
+
+*,
+*::before,
+*::after {
+  /* 毛玻璃每帧都要重新采样背景，显存吃紧时是头号掉帧来源 */
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+
+  /* 过渡与动画压到近似瞬时：保留最终态，去掉中间帧 */
+  animation-duration: 0.001s !important;
+  animation-delay: 0s !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001s !important;
+  transition-delay: 0s !important;
+}
+
+html {
+  /* 平滑滚动在低帧率下会放大卡顿感 */
+  scroll-behavior: auto !important;
+}
+
+/* 尊重系统「减少动态效果」偏好的站点，再补一刀 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
