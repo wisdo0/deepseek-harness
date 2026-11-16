@@ -59,6 +59,30 @@ jobs:
             Write-Host "OK $($_.Name)"
           }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: 干净环境验证启动器（Windows PowerShell 5.1 实测）
+        shell: pwsh
+        run: |
+          # 这一层专治"路径写死"：真装一份 dsh，让脚本自己去探测。
+          # 特意用 powershell.exe(5.1) 而不是 pwsh(7)，这样 BOM/编码问题也会暴露。
+          $root = Join-Path $env:RUNNER_TEMP 'dsh-root'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Push-Location $root
+          try {
+            npm install @deepseek-ai/dsh --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'npm install 失败' }
+          } finally {
+            Pop-Location
+          }
+          $bin = Join-Path $root 'node_modules\@deepseek-ai\dsh\lib\bin.js'
+          if (-not (Test-Path $bin)) { throw "dsh 未安装到位: $bin" }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\lowend\dsh-gpu.ps1 -Check -DshDir $root
+          if ($LASTEXITCODE -ne 0) { throw "启动器自检失败 (exit $LASTEXITCODE)" }
+          Write-Host '启动器探测正常'
+
       - name: 打包
         shell: pwsh
         run: |
