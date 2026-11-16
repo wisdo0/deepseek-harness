@@ -63,6 +63,32 @@ jobs:
           if ($ready -and $hit.LineNumber -gt $ready.LineNumber) { throw "注入点晚于 whenReady" }
           Write-Host "whenReady 在第 $($ready.LineNumber) 行，顺序正确"
 
+      - name: 生成 .env.windows
+        shell: pwsh
+        run: |
+          # package-target.ts 要求这个文件存在，且 mandatory-update origin 在 unsigned 下也必填。
+          # 下面是占位值：能过构建校验，但包内置的更新/登录地址不是真实服务。
+          # 要出可用的包，把这里换成你自己的服务端配置。
+          # 注意别用 here-string：YAML 缩进会被当成每行的前导空格写进文件。
+          $lines = @(
+            'DSH_DESKTOP_APP_ID=com.deepseek.dsh',
+            'DSH_DESKTOP_AUTO_UPDATE_ENV=test',
+            'DOWNLOAD_TEST_ORIGIN=https://example.invalid',
+            'DOWNLOAD_TEST_RELEASE_ID=0123456789abcdef0123456789abcdef',
+            'DSH_DESKTOP_NPM_REGISTRY=https://registry.npmmirror.com',
+            'DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN=https://example.invalid',
+            'DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN=https://example.invalid',
+            'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG=''{"allowedAuthOrigins":["https://login.example.com"]}''',
+            'DSH_DESKTOP_WINDOWS_CER_FILE=',
+            'DSH_DESKTOP_WINDOWS_SIGNTOOL=',
+            'DSH_DESKTOP_WINDOWS_KEY_CONTAINER=',
+            'DSH_DESKTOP_WINDOWS_TOKEN_PIN=',
+            'DSH_DESKTOP_WINDOWS_COMPRESSION_LEVEL=3'
+          )
+          Set-Content -Path apps/desktop/.env.windows -Value ($lines -join "`n") -Encoding utf8
+          Write-Host "已生成 .env.windows（占位配置，$($lines.Count) 行）"
+          Get-Content apps/desktop/.env.windows | ForEach-Object { "  |$_" }
+
       - name: 构建桌面端（Windows x64，未签名）
         if: inputs.skip_install != true
         shell: pwsh
