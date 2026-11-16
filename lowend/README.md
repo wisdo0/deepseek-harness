@@ -67,15 +67,42 @@ npm install @deepseek-ai/dsh
 （`lite-proxy.mjs`，默认后端端口 +1），把 `lite.css` 以**同源样式表**的形式
 注入 HTML 的 `</head>` 之前，然后让浏览器打开反代地址。
 
-三点值得注意：
+四点值得注意：
 
 - **同源**：样式表从反代自身路径 `/__dsh_lite.css` 取，站点 CSP 里
   `style-src 'self'` 即可通过，不需要放宽安全策略。
-- **WebSocket 单独转发**：dsh 靠 WS 推流式回复，反代的 `upgrade` 走原始首部直通，
-  否则界面会「能打开但不回话」。
+- **`Origin` 必须跟着 `Host` 一起改写**：这是最容易踩的坑，见下节。
+- **WebSocket 单独转发**：dsh 靠 WS 推流式回复，反代的 `upgrade` 走原始首部直通。
 - **非 HTML 不碰**：流式响应原样 `pipe`，绝不缓冲。
 
 代价是多一个本地进程（约 30MB 内存），`-Stop` 会一并收掉。
+
+### 坑：只改 `Host` 不改 `Origin`，界面会一直「重新连接中」
+
+第一版反代只把 `Host` 改写成上游，`Origin` 原样透传。结果：
+
+- 页面 HTML、CSS、JS 全部正常加载，界面骨架也渲染出来了
+- 但 **WebSocket 握手被上游 403**，界面卡在「重新连接中…」，所有 API 调用报
+  `transport failure`
+
+dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
+`http://127.0.0.1:3081`，于是发出 `Origin: http://127.0.0.1:3081`；反代把请求转给
+`127.0.0.1:3080` 时虽然改了 `Host`，但 `Origin` 还是 3081，上游一比就拒。
+
+实测对照（同一上游，只改 Origin）：
+
+| 请求 | 结果 |
+|---|---|
+| 直连 3080，`Origin: http://127.0.0.1:3080` | `101 Switching Protocols` |
+| 直连 3080，`Origin: http://127.0.0.1:3081` | `403 Forbidden` |
+| 经反代 3081，`Origin: http://127.0.0.1:3081` | 修复前 `403` → 修复后 `101` |
+
+修复后浏览器实测：WS 建连 1 个、握手 101、发 6 帧 891 字节、收 6 帧 3967 字节、
+零重连提示，界面正文从 78 字符（只有「重新连接中」）变为 368 字符的完整界面。
+
+`tests/proxy.test.mjs` 里为此加了一组带**对照组**的断言：先证明 mock 上游确实会
+拒绝错 Origin（否则断言等于摆设），再验证经反代能拿到 101，并断言反代送来的
+`Origin` 已被改写为上游地址。把修复去掉重跑，会有 5 项断言失败。
 
 ## 生效的启动标志
 
@@ -96,6 +123,27 @@ npm install @deepseek-ai/dsh
 
 `dsh-gpu.ps1` **必须保存为 UTF-8 with BOM**。Windows PowerShell 5.1 对无 BOM 的
 UTF-8 会按 ANSI(GBK) 解析，中文字符串直接导致语法错误。改脚本后别用会去 BOM 的编辑器。
+
+## 坑：开着代理时 PowerShell 5.1 会直接崩
+
+Windows 环境块允许 `HTTP_PROXY` 与 `http_proxy` 并存（大小写不同算不同键）。
+装了 Clash / 公司代理的机器经常两个都有，而 PowerShell 5.1 的 `env:` 驱动器和
+`Start-Process` 内部都用「不区分大小写的字典 + Add」填充，碰到重复键就抛：
+
+```
+Start-Process : 已添加项。字典中的关键字:“HTTP_PROXY”所添加的关键字:“http_proxy”
+```
+
+脚本会死在拉起后端的那一刻。现在 `Repair-ProcessEnv` 在启动最前面把每个逻辑键
+重写一遍（`SetEnvironmentVariable` 在 Windows 上大小写不敏感，一次调用能清掉所有
+变体），每组只留一份，代理本身仍然可用。
+
+同时端口探测从 `Invoke-WebRequest` 换成了裸 TCP：前者会读 `HTTP_PROXY`，在开了
+代理的机器上访问 `127.0.0.1` 也可能被劫持，误判成「端口没人听」。
+
+> 顺带修了一个由此暴露的时序 bug：改用 TCP 探测后，端口 listen 与「日志写出 token」
+> 不是同一时刻，端口刚起就读日志会读空。`Get-AppUrl` 现在会轮询等待。
+
 
 ## 复现测量
 
@@ -119,6 +167,7 @@ node server.mjs          # 终端 A
 
 - [x] 量化默认与强制 GPU 的差距，确认瓶颈在黑名单而非硬件
 - [x] 一键启动器（后端托管 + app 模式 + 标志固化）
-- [ ] 为 Web 前端提供 `lite` 渲染档：关闭 `backdrop-filter`、限制动画、虚拟滚动
+- [x] 为 Web 前端提供 `lite` 渲染档（反代注入 CSS，不动上游代码）
+- [x] 反代行为回归测试进 CI（含 Origin 改写对照组）
 - [ ] Electron 桌面端在 `app.commandLine` 层固化标志，免去浏览器依赖
-- [ ] CI 构建 Windows 产物并附测量报告
+- [ ] 跟随上游同步的 rebase 例行流程
