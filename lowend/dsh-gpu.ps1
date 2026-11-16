@@ -135,6 +135,8 @@ if ($Check) {
     Write-Host "日志    : $logFile"
     $b = Find-Browser 'edge'; if (-not $b) { $b = Find-Browser 'chrome' }
     Write-Host "浏览器  : $(if($b){$b}else{'未找到'})"
+    # 自检失败要有非零退出码，否则 CI 里等于没测
+    if (-not $nodeExe -or -not $dshBin) { exit 1 }
     return
 }
 
