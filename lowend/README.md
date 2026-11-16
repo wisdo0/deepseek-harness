@@ -157,6 +157,34 @@ dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
 > 切换标志组合后，务必用**独立的 `user-data-dir`** 重开，否则 Chromium 可能沿用
 > 已在运行的进程而不读取新标志。
 
+## 便携包（推荐分发方式）
+
+`portable-build.yml` 在 `lowend/` 有改动并 push 后自动跑，**约 3 分钟**出包，
+不需要本机做任何复制或压缩（本机 2 核机器上同样的活要 30 分钟）。
+
+产物 `dsh-portable.zip`（约 234MB），解压后是一个 `dsh-portable\` 目录：
+
+```
+dsh-portable\
+  DeepSeek.cmd         双击启动
+  DeepSeek-Stop.cmd    双击全停
+  使用说明.txt
+  node\                Node 24 运行时（免安装）
+  app\                 dsh 及全部依赖
+  lowend\              启动器 / 反代 / 样式
+  profile\             浏览器配置（首次运行生成）
+```
+
+**解压 → 双击 `DeepSeek.cmd`** 即可，目标机器不需要装 Node 或任何开发环境。
+整个目录可随意移动、复制到别的电脑，路径全部相对，配置写在包内。
+
+```bash
+gh run download <run-id> -n dsh-portable     # 取某次构建的包
+```
+
+手动重建：改任意 `lowend/` 文件后 push 即触发（workflow_dispatch 只读默认分支，
+而本文件在 lowend-win，所以不提供按钮式触发）。
+
 ## 桌面端（Electron）
 
 上游有完整桌面端：`apps/desktop`（Electron 44 + electron-builder）。
