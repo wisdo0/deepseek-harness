@@ -174,9 +174,10 @@ dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
 gh workflow run desktop-build.yml        # 手动触发构建
 ```
 
-构建约 14 分钟，产物在仓库根的 `.desktop-build/targets/win-x64/unsigned-artifacts/`
-（注意是**点开头**的目录，不在 `apps/desktop/` 下），CI 会把
+构建约 14 分钟，产物在 `apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/`
+（注意：**点开头**的隐藏目录，且相对 desktop 项目目录，不是仓库根），CI 会把
 `deepseek-harness-<版本>-win-x64-unsigned.exe` 作为 artifact 上传。
+上传时必须加 `include-hidden-files: true`，否则 `upload-artifact` 默认排除隐藏目录。
 产物自包含 Node / pnpm / Python 运行时，目标机器不需要装开发环境。
 
 **配置限制（重要）**：打包需要 `apps/desktop/.env.windows`，且 mandatory-update
