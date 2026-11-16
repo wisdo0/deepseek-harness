@@ -38,6 +38,12 @@ function buildUpstreamHeaders(raw) {
   // 上游回明文，我们才能安全注入
   delete out['accept-encoding'];
   out.host = `${UPSTREAM_HOST}:${UPSTREAM_PORT}`;
+  // dsh 会校验 Origin 与自身 authority 一致。反代换了端口，Origin 必须同步改写，
+  // 否则上游直接 403 —— 表现为界面一直"重新连接中"。
+  if (out.origin) {
+    const scheme = /^https:/i.test(out.origin) ? 'https' : 'http';
+    out.origin = `${scheme}://${UPSTREAM_HOST}:${UPSTREAM_PORT}`;
+  }
   return out;
 }
 
@@ -110,8 +116,13 @@ server.on('upgrade', (req, socket, head) => {
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
       const name = req.rawHeaders[i];
       const value = req.rawHeaders[i + 1];
-      if (name.toLowerCase() === 'host') {
+      const lower = name.toLowerCase();
+      if (lower === 'host') {
         lines.push(`${name}: ${UPSTREAM_HOST}:${UPSTREAM_PORT}`);
+      } else if (lower === 'origin') {
+        // 同上：Origin 不改写会被上游 403 掉，握手失败
+        const scheme = /^https:/i.test(value) ? 'https' : 'http';
+        lines.push(`${name}: ${scheme}://${UPSTREAM_HOST}:${UPSTREAM_PORT}`);
       } else {
         lines.push(`${name}: ${value}`);
       }
