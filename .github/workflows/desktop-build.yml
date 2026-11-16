@@ -118,12 +118,13 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          # 只在候选输出目录里找，且限制深度。
+          # 产物在仓库根的 .desktop-build/（点开头），不在 apps/desktop 下。
           # 不要对整个 apps/desktop 递归：node_modules 有几十万文件，能跑十几分钟。
-          $dirs = @('apps/desktop/out','apps/desktop/release','apps/desktop/dist','apps/desktop/build')
+          $dirs = @('.desktop-build/targets')
           foreach ($d in $dirs) {
             if (Test-Path $d) {
-              Get-ChildItem -Path $d -Recurse -Depth 2 -Include *.exe,*.zip,*.7z -ErrorAction SilentlyContinue |
+              Get-ChildItem -Path $d -Recurse -Depth 3 -Include *.exe,*.zip,*.7z -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch 'win-unpacked|node_modules|__uninstaller' } |
                 Sort-Object Length -Descending | Select-Object -First 10 |
                 ForEach-Object { "{0,10:N1} MB  {1}" -f ($_.Length/1MB), $_.FullName }
             }
@@ -134,10 +135,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-desktop-lowend-win-x64
-          path: |
-            apps/desktop/out/
-            apps/desktop/release/
-            apps/desktop/dist/
-            apps/desktop/build/
-          if-no-files-found: warn
+          path: .desktop-build/targets/win-x64/unsigned-artifacts/*.exe
+          if-no-files-found: error
           retention-days: 14
