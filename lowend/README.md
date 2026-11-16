@@ -36,6 +36,9 @@ npm install @deepseek-ai/dsh
 
 # 停止后端
 .\lowend\dsh-gpu.cmd -Stop
+
+# 还嫌不够顺：再关掉平滑滚动与过渡动画
+.\lowend\dsh-gpu.cmd -Lite
 ```
 
 脚本会自动探测 Node（≥24.9）、`@deepseek-ai/dsh` 与浏览器；端口被占用时顺延。
