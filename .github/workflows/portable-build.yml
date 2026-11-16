@@ -76,8 +76,11 @@ jobs:
           $root = "$env:RUNNER_TEMP\dsh-portable"
           $out = "$env:GITHUB_WORKSPACE\dsh-portable.zip"
           if (Test-Path $out) { Remove-Item $out -Force }
-          # 用 7z：7 万个小文件，Compress-Archive 慢得多
-          & 7z a -tzip -mx=5 -mmt=on $out "$root\*" | Out-Null
+          # 带上顶层目录：解压出来是一个 dsh-portable\ 文件夹，而不是散一地文件。
+          # 用 7z：7 万个小文件，Compress-Archive 慢得多。
+          Push-Location (Split-Path $root -Parent)
+          & 7z a -tzip -mx=5 -mmt=on $out "dsh-portable" | Out-Null
+          Pop-Location
           if ($LASTEXITCODE -ne 0) { throw '压缩失败' }
           $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
           Write-Host "zip = $mb MB"
