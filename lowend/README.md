@@ -157,6 +157,28 @@ dsh 会校验 `Origin` 与自身 authority 是否一致。浏览器访问的是
 > 切换标志组合后，务必用**独立的 `user-data-dir`** 重开，否则 Chromium 可能沿用
 > 已在运行的进程而不读取新标志。
 
+## 桌面端（Electron）
+
+上游有完整桌面端：`apps/desktop`（Electron 44 + electron-builder）。
+`lowend/scripts/apply-desktop-flags.mjs` 在**构建时**把同一组 Chromium 标志注入
+`apps/desktop/src/main.ts`，而不是直接改仓库里的上游源码——这样 lowend-win
+才能一直干净地合并上游。
+
+注入点选在 import 块之后的第一条语句，脚本会自检注入位置早于 `app.whenReady()`，
+否则标志不会生效。重复执行幂等；上游若改动了锚点，脚本会**报错并拒绝继续**，
+不会静默地产出一个没有补丁的包。
+
+标志只在 Windows 生效，设 `DSH_LOWEND_GPU=0` 可整体关闭。
+
+```bash
+gh workflow run desktop-build.yml        # 手动触发构建
+```
+
+产物为 Windows x64 未签名安装包（无签名证书，首次运行 SmartScreen 会提示）。
+
+> 桌面端与浏览器启动器用的是**同一组标志**，性能上没有差别。
+> 它的价值在于免装 Node / dsh、单 exe 分发，适合自己机器以外的场景。
+
 ## 跟随上游
 
 `upstream-sync.yml` 每周一 09:23（北京）自动检查上游，也可手动触发。
