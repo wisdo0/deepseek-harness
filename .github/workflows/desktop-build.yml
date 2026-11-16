@@ -1,0 +1,93 @@
+name: 桌面端构建（低配 GPU 标志）
+
+# 把 lowend 的 Chromium 标志注入 Electron 桌面端，打出 Windows x64 安装包。
+# 与 lowend-build 的分工：
+#   lowend-build   —— 每次 push 跑，验证启动器/反代，出几 KB 的脚本包
+#   本 workflow    —— 手动触发，构建完整 Electron 桌面端，产物上百 MB
+#
+# 放在 master：workflow_dispatch 只读默认分支。
+# 构建时注入而非改上游 main.ts，保证 lowend-win 能干净地合并上游。
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_install:
+        description: 跳过依赖安装（仅调试用）
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - name: 检出 lowend-win
+        uses: actions/checkout@v4
+        with:
+          ref: lowend-win
+
+      - name: pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+
+      - name: Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.2
+          cache: pnpm
+
+      - name: 安装依赖（monorepo）
+        if: inputs.skip_install != true
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+
+      - name: 注入 GPU 标志
+        shell: pwsh
+        run: |
+          node lowend/scripts/apply-desktop-flags.mjs
+          if ($LASTEXITCODE -ne 0) { throw "注入失败：上游可能改了 main.ts 结构" }
+
+      - name: 确认注入结果
+        shell: pwsh
+        run: |
+          $hit = Select-String -Path apps/desktop/src/main.ts -Pattern '__DSH_LOWEND_GPU_FLAGS__' | Select-Object -First 1
+          if (-not $hit) { throw "main.ts 里没有注入标记" }
+          Write-Host "注入于第 $($hit.LineNumber) 行"
+          # 必须在 whenReady 之前，否则标志不生效
+          $ready = Select-String -Path apps/desktop/src/main.ts -Pattern 'app\.whenReady\(\)' | Select-Object -First 1
+          if ($ready -and $hit.LineNumber -gt $ready.LineNumber) { throw "注入点晚于 whenReady" }
+          Write-Host "whenReady 在第 $($ready.LineNumber) 行，顺序正确"
+
+      - name: 构建桌面端（Windows x64，未签名）
+        if: inputs.skip_install != true
+        shell: pwsh
+        env:
+          CSC_LINK: ""
+          CSC_KEY_PASSWORD: ""
+        run: pnpm --filter @deepseek-ai/dsh-desktop package:win:x64:unsigned
+
+      - name: 列出产物
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path apps/desktop -Recurse -Include *.exe,*.zip,*.7z -ErrorAction SilentlyContinue |
+            Sort-Object Length -Descending | Select-Object -First 15 |
+            ForEach-Object { "{0,10:N1} MB  {1}" -f ($_.Length/1MB), $_.FullName }
+
+      - name: 上传安装包
+        if: inputs.skip_install != true
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-lowend-win-x64
+          path: |
+            apps/desktop/out/
+            apps/desktop/release/
+            apps/desktop/dist/
+            apps/desktop/build/
+          if-no-files-found: warn
+          retention-days: 14
