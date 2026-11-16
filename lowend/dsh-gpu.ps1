@@ -155,6 +155,13 @@ function Stop-Server {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
             Write-Host "[dsh] 清理残留 pid=$($_.ProcessId)"
         }
+    # lite 反代也要一起收掉
+    Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match 'lite-proxy\.mjs' } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Host "[dsh] 已停止 lite 反代 pid=$($_.ProcessId)"
+        }
 }
 
 if ($Stop) { Stop-Server; return }
@@ -219,6 +226,40 @@ if (Test-Port $chosen) {
 
 $appUrl = Get-AppUrl $chosen
 if (-not $appUrl) { throw "没从 $logFile 解析到 token 入口，检查后端日志" }
+
+if ($Lite) {
+    $proxyEntry = Join-Path $PSScriptRoot 'lite-proxy.mjs'
+    if (-not (Test-Path $proxyEntry)) { throw "找不到 lite 反代：$proxyEntry" }
+
+    $litePort = $chosen + 1
+    if (Test-Port $litePort) {
+        Write-Host "[dsh] 复用已在运行的 lite 反代（端口 $litePort）"
+    } else {
+        Write-Host "[dsh] 启动 lite 反代 $chosen -> $litePort"
+        $env:DSH_UPSTREAM_PORT = "$chosen"
+        $env:DSH_LITE_PORT     = "$litePort"
+        $proxyLog = Join-Path $logDir 'lite-proxy.log'
+        $pproc = Start-Process -FilePath $nodeExe -ArgumentList @($proxyEntry) `
+            -WorkingDirectory $logDir -RedirectStandardOutput $proxyLog -RedirectStandardError "$proxyLog.err" `
+            -PassThru -WindowStyle Hidden
+
+        $ok = $false
+        for ($i = 0; $i -lt 40; $i++) {
+            if (Test-Port $litePort) { $ok = $true; break }
+            if ($pproc.HasExited) { break }
+            Start-Sleep -Milliseconds 250
+        }
+        if (-not $ok) {
+            Write-Host "[dsh] lite 反代没起来，日志：" -ForegroundColor Red
+            if (Test-Path $proxyLog) { Get-Content $proxyLog -Tail 20 }
+            throw "lite 反代启动失败"
+        }
+    }
+    # 打开反代地址而不是后端地址，同源不变，token 原样带过去
+    $appUrl = $appUrl -replace ":$chosen/", ":$litePort/"
+    Write-Host "[dsh] 已注入 lite 样式（经反代 $litePort）"
+}
+
 Write-Host "[dsh] 入口 $appUrl"
 
 $chooser = if ($Browser -eq 'auto') { @('edge', 'chrome') } else { @($Browser) }
