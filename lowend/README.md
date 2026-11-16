@@ -49,17 +49,55 @@ npm install @deepseek-ai/dsh
 # 启动（会自动拉起后端，再打开加速窗口）
 .\lowend\dsh-gpu.cmd
 
-# 停止后端
+# 停止：后端 + 反代 + 本工具启动的浏览器窗口，一次全停
 .\lowend\dsh-gpu.cmd -Stop
+
+# 清理磁盘缓存（会先全停）。只删可再生缓存，保留登录态与历史
+.\lowend\dsh-gpu.cmd -Clean
 
 # 还嫌不够顺：注入 lite 样式（关掉毛玻璃、过渡动画、平滑滚动）
 .\lowend\dsh-gpu.cmd -Lite
 ```
 
+`-Stop` 只关**用本工具 profile 目录起来**的浏览器进程，按 `--user-data-dir`
+规范化后比对，不会误伤你自己正在用的浏览器（实测：本工具 9 个进程全关，
+其它 10 个 Edge 进程原样保留）。
+
+`-Clean` 实测把 profile 从 38MB 降到 14MB，`Preferences` / `Login Data` /
+`Web Data` / `History` / `Local State` 全部保留。日常不需要跑，缓存涨到几百 MB 时再用。
+
 脚本会自动探测 Node（≥24.9）、`@deepseek-ai/dsh` 与浏览器；端口被占用时顺延。
 探测结果不对时用 `-DshDir`，或环境变量 `DSH_NODE` / `DSH_BIN` / `DSH_DIR` 覆盖。
 
 窗口以 `--app=` 模式打开，无地址栏，观感接近桌面应用。
+
+## 内存：这台机器真正的第二个瓶颈
+
+GPU 光栅化解决之后，可用内存往往比显卡更早见底（本机总 5.86GB，可用常年 <1.5GB）。
+所以启动器默认再带一组省内存标志，实测 A/B（同一页面，只换标志）：
+
+| 指标 | 仅 GPU 组 | + 省内存组 | 差异 |
+|---|---|---|---|
+| Edge 进程数 | 13 | **9** | −4 |
+| 工作集内存 | 704 MB | **495 MB** | **−209 MB（−30%）** |
+| 帧率 | 60 fps | 60 fps | 无变化 |
+| 平均帧时间 | 16.7 ms | 16.7 ms | 无变化 |
+| p95 帧时间 | 16.8 ms | 16.9 ms | 噪声内 |
+| JS 堆 | 25.3 MB | 25.3 MB | 相同 |
+
+JS 堆一致说明省掉的是**浏览器自身开销**（后台扩展页、同步服务、后台联网），
+页面本身没受影响，帧率也没降。
+
+```text
+--disable-component-extensions-with-background-pages   后台扩展页白吃内存
+--disable-background-networking                       关掉更新检查等后台联网
+--disable-default-apps / --disable-sync / --no-pings
+--disk-cache-size=67108864                            磁盘缓存限 64MB
+--disable-features=msEdgeSyncPromo,EdgeSyncConfirmationDialog,Translate
+```
+
+> `--disk-cache-size` 限的是磁盘不是内存，但能避免 profile 目录涨到 300MB+。
+> `--disable-features` 一个进程只认一次，别和别的 `--disable-features` 重复给。
 
 ## `-Lite` 是怎么实现的
 
@@ -169,5 +207,7 @@ node server.mjs          # 终端 A
 - [x] 一键启动器（后端托管 + app 模式 + 标志固化）
 - [x] 为 Web 前端提供 `lite` 渲染档（反代注入 CSS，不动上游代码）
 - [x] 反代行为回归测试进 CI（含 Origin 改写对照组）
+- [x] 省内存标志 A/B 实测（−30% 工作集，帧率不变）
+- [x] `-Stop` 全停（含浏览器，按 profile 精确匹配不误伤）与 `-Clean` 缓存清理
 - [ ] Electron 桌面端在 `app.commandLine` 层固化标志，免去浏览器依赖
 - [ ] 跟随上游同步的 rebase 例行流程
