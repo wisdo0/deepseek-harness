@@ -34,6 +34,28 @@ $ErrorActionPreference = 'Stop'
 $MinNodeMajor = 24
 $MinNodeMinor = 9
 
+# ---------- 环境块归一化 ----------
+# Windows 环境块允许 HTTP_PROXY 与 http_proxy 并存（大小写不同算不同键）。
+# 开了 Clash / 企业代理的机器常见这种重复，而 PowerShell 5.1 的 env: 驱动器
+# 和 Start-Process 内部都用「不区分大小写的字典 + Add」填充，碰到重复键会抛
+# "已添加项"，脚本直接死在启动进程那一步。这里每个逻辑键重写一遍，去重。
+function Repair-ProcessEnv {
+    $vars = [System.Environment]::GetEnvironmentVariables()
+    $n = 0
+    foreach ($name in @($vars.Keys)) {
+        if ([string]::IsNullOrEmpty($name)) { continue }
+        $value = $vars[$name]
+        try {
+            # SetEnvironmentVariable 在 Windows 上大小写不敏感，一次调用能清掉所有变体
+            [System.Environment]::SetEnvironmentVariable($name, $null, 'Process')
+            if ($null -ne $value) { [System.Environment]::SetEnvironmentVariable($name, [string]$value, 'Process') }
+            $n++
+        } catch { }
+    }
+    return $n
+}
+Repair-ProcessEnv | Out-Null
+
 # ---------- 环境探测 ----------
 function Get-NodeVersion([string]$exe) {
     try {
@@ -166,22 +188,34 @@ function Stop-Server {
 
 if ($Stop) { Stop-Server; return }
 
-function Get-AppUrl([int]$p) {
-    if (Test-Path $logFile) {
-        $pat = "http://127\.0\.0\.1:$p/\?token=[A-Za-z0-9_\-]+"
-        $m = Select-String -Path $logFile -Pattern $pat -AllMatches | Select-Object -Last 1
-        if ($m) { return $m.Matches[0].Value }
+function Get-AppUrl([int]$p, [int]$TimeoutSec = 25) {
+    # 必须轮询：TCP 端口 listen 与「日志里写出 token」不是同一时刻，
+    # 端口刚起就读日志会读空。冷启动时这个窗口有几百毫秒。
+    $pat = "http://127\.0\.0\.1:$p/\?token=[A-Za-z0-9_\-]+"
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    while ($true) {
+        if (Test-Path $logFile) {
+            $m = Select-String -Path $logFile -Pattern $pat -AllMatches -ErrorAction SilentlyContinue | Select-Object -Last 1
+            if ($m) { return $m.Matches[0].Value }
+        }
+        if ((Get-Date) -ge $deadline) { return $null }
+        Start-Sleep -Milliseconds 250
     }
-    return $null
 }
 
 function Test-Port([int]$p) {
+    # 用裸 TCP 探测而不是 Invoke-WebRequest：后者会读 HTTP_PROXY，
+    # 在开了代理的机器上访问 127.0.0.1 也可能被劫持，导致误判"端口没人听"。
+    $client = New-Object System.Net.Sockets.TcpClient
     try {
-        Invoke-WebRequest -Uri "http://127.0.0.1:$p/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop | Out-Null
+        $iar = $client.BeginConnect('127.0.0.1', $p, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(600)) { return $false }
+        $client.EndConnect($iar)
         return $true
     } catch {
-        if ($_.Exception.Response) { return $true }
         return $false
+    } finally {
+        $client.Close()
     }
 }
 
@@ -192,12 +226,12 @@ if (-not $dshBin)  { throw "找不到 @deepseek-ai/dsh。先在某目录 npm ins
 $chosen = $Port
 for ($i = 0; $i -lt 10; $i++) {
     if (-not (Test-Port $chosen)) { break }
-    if (Get-AppUrl $chosen) { break }
+    if (Get-AppUrl $chosen 1) { break }
     $chosen++
 }
 
 if (Test-Port $chosen) {
-    if (-not (Get-AppUrl $chosen)) { throw "端口 $chosen 被其它进程占用，且日志里没有可用 token" }
+    if (-not (Get-AppUrl $chosen 1)) { throw "端口 $chosen 被其它进程占用，且日志里没有可用 token" }
     Write-Host "[dsh] 复用已在运行的后端（端口 $chosen）"
 } else {
     Write-Host "[dsh] 启动后端 → 端口 $chosen"
