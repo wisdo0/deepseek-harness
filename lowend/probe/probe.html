@@ -21,7 +21,7 @@
     border-bottom: 1px solid rgba(255,255,255,.12);
     box-shadow: 0 8px 32px rgba(0,0,0,.45);
   }
-  #list { flex: 1; overflow-y: auto; padding: 10px 16px; contain: content; }
+  #list { flex: 1; overflow-y: auto; padding: 10px 16px; }
   .row {
     margin: 6px 0; padding: 10px 14px; border-radius: 10px; color: #dbeafe; font-size: 13px;
     background: rgba(30, 41, 59, .62);
@@ -37,6 +37,15 @@
 <div id="hud">measuring…</div>
 <script>
 const list = document.getElementById('list');
+
+// ?lite=1 时加载 lite.css，用来量样式本身的收益（与浏览器标志解耦）
+if (location.search.includes('lite')) {
+  const l = document.createElement('link');
+  l.rel = 'stylesheet';
+  l.href = '/lite.css';
+  document.head.appendChild(l);
+}
+
 const ROWS = 250;
 let html = '';
 for (let i = 0; i < ROWS; i++) {
@@ -57,44 +66,69 @@ function glInfo() {
   } catch (e) { return { renderer: 'err:' + e.message }; }
 }
 
-const ts = [];
-let scrollOn = true, lastT = 0;
-
-function scrollLoop() {
-  if (scrollOn) {
-    list.scrollTop += 18;
-    if (list.scrollTop + list.clientHeight >= list.scrollHeight - 3) list.scrollTop = 0;
-  }
+// 持续滚动 + 持续重绘，制造渲染压力
+(function scrollLoop() {
+  list.scrollTop += 18;
+  if (list.scrollTop + list.clientHeight >= list.scrollHeight - 3) list.scrollTop = 0;
   requestAnimationFrame(scrollLoop);
-}
-requestAnimationFrame(scrollLoop);
+})();
 
+function send(payload) {
+  document.getElementById('hud').textContent = payload.error ? 'throttled' : payload.fps + ' fps';
+  fetch('/report', { method: 'POST', body: JSON.stringify(payload) });
+}
+
+// 预热：窗口刚打开时 Chromium 会节流 rAF，直接开测会测出一堆几百毫秒的假数据。
+// 必须等连续 10 帧都稳定在 50ms 以内，才开始正式计时。
 function startMeasure() {
+  const WARM_FRAMES = 10;
+  const MEASURE_MS = 3000;
+  const WARM_TIMEOUT_MS = 8000;
+
+  let prev = 0;
+  let warm = 0;
+  let measuring = false;
+  let measureStart = 0;
+  const deltas = [];
   const t0 = performance.now();
-  lastT = t0;
+
   function tick(now) {
-    if (lastT) ts.push(now - lastT);
-    lastT = now;
-    if (now - t0 < 3000) { requestAnimationFrame(tick); return; }
-    const v = ts.slice(3).filter(d => d > 0);
-    v.sort((a, b) => a - b);
-    const avg = v.reduce((a, b) => a + b, 0) / (v.length || 1);
-    const res = {
-      fps: +(1000 / avg).toFixed(1),
-      avgMs: +avg.toFixed(1),
-      p95Ms: +(v[Math.floor(v.length * 0.95)] || 0).toFixed(1),
-      n: v.length,
-      gl: glInfo(),
-      cpus: navigator.hardwareConcurrency,
-      vp: window.innerWidth + 'x' + window.innerHeight
-    };
-    document.getElementById('hud').textContent = res.fps + ' fps';
-    fetch('/report', { method: 'POST', body: JSON.stringify(res) });
+    if (prev) {
+      const dt = now - prev;
+      if (!measuring) {
+        if (dt < 50) warm++; else warm = 0;
+        if (warm >= WARM_FRAMES) { measuring = true; measureStart = now; }
+      } else {
+        deltas.push(dt);
+      }
+    }
+    prev = now;
+
+    if (!measuring) {
+      if (now - t0 > WARM_TIMEOUT_MS) { send({ error: 'throttled', warm }); return; }
+      requestAnimationFrame(tick);
+      return;
+    }
+    if (now - measureStart > MEASURE_MS) {
+      const v = deltas.filter(d => d > 0).sort((a, b) => a - b);
+      const avg = v.reduce((a, b) => a + b, 0) / (v.length || 1);
+      send({
+        fps: +(1000 / avg).toFixed(1),
+        avgMs: +avg.toFixed(1),
+        p95Ms: +(v[Math.floor(v.length * 0.95)] || 0).toFixed(1),
+        n: v.length,
+        gl: glInfo(),
+        cpus: navigator.hardwareConcurrency,
+        vp: window.innerWidth + 'x' + window.innerHeight
+      });
+      return;
+    }
+    requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);
 }
 
 fetch('/ping');
-setTimeout(startMeasure, 1200);
+setTimeout(startMeasure, 800);
 </script>
 </body></html>
