@@ -1,0 +1,91 @@
+name: 便携包构建
+
+# 在 CI 上组装自包含便携包（Node 运行时 + dsh + 启动器），本机不用做任何复制压缩。
+# 与 lowend-build 的分工：
+#   lowend-build    每次 push 跑测试，出几 KB 的脚本包
+#   本 workflow     lowend/ 有改动时跑，出约 260MB 的完整便携包
+#
+# 本文件在 lowend-win 分支，靠 push 触发。
+# workflow_dispatch 只读默认分支，所以手动重建请改一个 lowend/ 文件后 push。
+
+on:
+  push:
+    branches: [lowend-win]
+    paths:
+      - 'lowend/**'
+      - '.github/workflows/portable-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: 检出 lowend-win
+        uses: actions/checkout@v4
+        with:
+          ref: lowend-win
+
+      - name: Node（用于执行 npm）
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.2
+
+      - name: 组装便携包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = '24.22.3'
+          $root = "$env:RUNNER_TEMP\dsh-portable"
+          if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          Write-Host '==> 1/4 下载 Node 便携运行时'
+          $zip = "$env:RUNNER_TEMP\node.zip"
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v$ver/node-v$ver-win-x64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\nodex" -Force
+          Move-Item "$env:RUNNER_TEMP\nodex\node-v$ver-win-x64" "$root\node"
+          & "$root\node\node.exe" --version
+
+          Write-Host '==> 2/4 安装 dsh 运行时'
+          New-Item -ItemType Directory -Force -Path "$root\app" | Out-Null
+          Push-Location "$root\app"
+          npm init -y | Out-Null
+          npm install @deepseek-ai/dsh --registry=https://registry.npmmirror.com --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw 'dsh 安装失败' }
+          Pop-Location
+          if (-not (Test-Path "$root\app\node_modules\@deepseek-ai\dsh\lib\bin.js")) { throw 'dsh bin 缺失' }
+
+          Write-Host '==> 3/4 复制启动器（剔除 probe/tests）'
+          Copy-Item -Path 'lowend' -Destination "$root\lowend" -Recurse
+          Remove-Item "$root\lowend\probe","$root\lowend\tests" -Recurse -Force -ErrorAction SilentlyContinue
+
+          Write-Host '==> 4/4 放入一键入口与说明'
+          Copy-Item 'lowend\portable\*' -Destination $root -Recurse -Force
+
+          # 启动器必须带 BOM，否则 PowerShell 5.1 下中文直接语法错误
+          $b = [IO.File]::ReadAllBytes("$root\lowend\dsh-gpu.ps1")
+          if (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) { throw 'dsh-gpu.ps1 缺 BOM' }
+          Write-Host '组装完成'
+
+      - name: 压缩
+        shell: pwsh
+        run: |
+          $root = "$env:RUNNER_TEMP\dsh-portable"
+          $out = "$env:GITHUB_WORKSPACE\dsh-portable.zip"
+          if (Test-Path $out) { Remove-Item $out -Force }
+          # 用 7z：7 万个小文件，Compress-Archive 慢得多
+          & 7z a -tzip -mx=5 -mmt=on $out "$root\*" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw '压缩失败' }
+          $mb = [math]::Round((Get-Item $out).Length / 1MB, 1)
+          Write-Host "zip = $mb MB"
+
+      - name: 上传便携包
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-portable
+          path: dsh-portable.zip
+          if-no-files-found: error
+          retention-days: 14
