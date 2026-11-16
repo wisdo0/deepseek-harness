@@ -3,8 +3,14 @@ import { readFileSync } from 'node:fs';
 
 const PORT = 8899;
 const page = readFileSync(new URL('./probe.html', import.meta.url));
+const liteCss = readFileSync(new URL('../lite.css', import.meta.url));
 
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/lite.css')) {
+    res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(liteCss);
+    return;
+  }
   if (req.url.startsWith('/report')) {
     let body = '';
     req.on('data', (c) => { body += c; });
