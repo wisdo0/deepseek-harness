@@ -12,6 +12,7 @@
         dsh-gpu -Port 3081       指定端口
         dsh-gpu -Browser chrome  强制用 Chrome
         dsh-gpu -NoApp           普通标签页而非 --app 窗口
+        dsh-gpu -Lite            额外关掉平滑滚动与过渡动画（更省，观感略生硬）
         dsh-gpu -DshDir D:\dsh   指定 dsh 安装目录
 
     环境变量覆盖：DSH_NODE、DSH_BIN、DSH_DIR
@@ -24,6 +25,7 @@ param(
     [switch]$Stop,
     [switch]$NoApp,
     [switch]$Check,
+    [switch]$Lite,
     [string]$DshDir,
     [string]$ProfileDir = "$env:LOCALAPPDATA\dsh-gpu-profile"
 )
@@ -238,6 +240,12 @@ $flags = @(
     "--no-default-browser-check",
     "--disable-backgrounding-occluded-windows"
 )
+
+# 更激进的减负：前端若尊重 prefers-reduced-motion，可关掉大部分过渡与动画
+if ($Lite) {
+    $flags += "--force-prefers-reduced-motion"
+    $flags += "--disable-smooth-scrolling"
+}
 
 if ($NoApp) { $flags += "--new-window"; $flags += $appUrl }
 else {
